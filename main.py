@@ -1,72 +1,63 @@
- 
 from fastapi import FastAPI, Request
-import requests
+from pydantic import BaseModel
 import os
+import requests
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
 load_dotenv()
 
-# Set up app
 app = FastAPI()
 
-# Load credentials from environment
 OANDA_API_KEY = os.getenv("OANDA_API_KEY")
 OANDA_ACCOUNT_ID = os.getenv("OANDA_ACCOUNT_ID")
-OANDA_URL = os.getenv("OANDA_URL", "https://api-fxpractice.oanda.com/v3")
+OANDA_URL = os.getenv("OANDA_URL")
 
 HEADERS = {
     "Authorization": f"Bearer {OANDA_API_KEY}",
     "Content-Type": "application/json"
 }
 
+class AlertData(BaseModel):
+    action: str
+    ticker: str
+    price: float
+    sl: float
+    tp: float
+
 @app.post("/webhook")
-async def webhook(request: Request):
-    try:
-        # Parse TradingView webhook JSON
-        data = await request.json()
-        print("🔔 Webhook received:", data)
+async def webhook(alert: AlertData):
+    print(f"🔔 Webhook received: {alert.dict()}")
 
-        action = data.get("action")
-        ticker = data.get("ticker", "")
-        instrument = ticker.replace("/", "_").upper()  # Convert to OANDA format
-        price = float(data.get("price"))
-        sl = float(data.get("sl"))
-        tp = float(data.get("tp"))
+    instrument = alert.ticker.replace("/", "_")
+    units = "100" if alert.action == "buy" else "-100"
 
-        # Validate action
-        if action not in ["buy", "sell"]:
-            return {"status": "error", "message": "Invalid action"}
+    tp_distance = round(abs(alert.tp - alert.price), 5)
+    sl_distance = round(abs(alert.price - alert.sl), 5)
 
-        # Choose units (hardcoded 100 for now)
-        units = "100" if action == "buy" else "-100"
-
-        # Build the order payload
-        order_payload = {
-            "order": {
-                "units": units,
-                "instrument": instrument,
-                "type": "MARKET",
-                "positionFill": "DEFAULT",
-                "takeProfitOnFill": {"price": f"{tp:.5f}"},
-                "stopLossOnFill": {"price": f"{sl:.5f}"}
+    order_data = {
+        "order": {
+            "instrument": instrument,
+            "units": units,
+            "type": "MARKET",
+            "positionFill": "DEFAULT",
+            "timeInForce": "FOK",
+            "takeProfitOnFill": {
+                "distance": str(tp_distance)
+            },
+            "stopLossOnFill": {
+                "distance": str(sl_distance)
             }
         }
+    }
 
-        # Send the order to OANDA
-        response = requests.post(
-            f"{OANDA_URL}/accounts/{OANDA_ACCOUNT_ID}/orders",
-            headers=HEADERS,
-            json=order_payload
-        )
+    print(f"📦 Sending order to OANDA:\n{order_data}")
 
-        print("📤 OANDA response:", response.status_code, response.text)
-        return {
-            "status": "success",
-            "request": data,
-            "oanda_response": response.json()
-        }
+    response = requests.post(
+        f"{OANDA_URL}/accounts/{OANDA_ACCOUNT_ID}/orders",
+        headers=HEADERS,
+        json=order_data
+    )
 
-    except Exception as e:
-        print("❌ Error:", str(e))
-        return {"status": "error", "message": str(e)}
+    print(f"📤 OANDA response: {response.status_code} {response.text}")
+    return {"status": "success", "oanda_response": response.json()}
+
